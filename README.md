@@ -40,50 +40,56 @@ on the original EXE), rebuilding each piece in C targeting the PS2's GS
 
 ## Current state
 
-**Overall project: ~38% complete**
+**Overall project: ~45% complete**
 
-| Phase | Area                    | Status   |
-|-------|-------------------------|----------|
-| 1     | PS2 renderer            | ~95%     |
-| 2     | MPS bytecode interpreter| **complete** |
-| 3     | Engine runtime classes  | 0%       |
-| 4     | I/O (input/audio/files) | 0%       |
-| 5     | Smacker video playback  | 0%       |
-| 6     | Memory/VRAM management  | 0%       |
-| 7     | Polish and full testing | 0%       |
+| Phase | Area                     | Status        |
+|-------|--------------------------|---------------|
+| 1     | PS2 renderer             | ~95%          |
+| 2     | MPS bytecode interpreter | **complete**  |
+| 3     | Engine runtime classes   | ~20%          |
+| 4     | I/O (input/audio/files)  | 0%            |
+| 5     | Smacker video playback   | 0%            |
+| 6     | Memory/VRAM management   | 0%            |
+| 7     | Polish and full testing  | 0%            |
 
 **What runs today:**
 
 - A PS2 ELF that boots on real hardware and in PCSX2, renders sprites
   with transparency and animation.
-- A host-side MPS interpreter that loads every one of the game's 43
-  scripts with correct semantics - 24 opcodes, full expression evaluator
-  with all comparison/arithmetic/string operators, per-object events,
-  cross-file scene chaining.
-- All 43 scripts surveyed with each script's gameplay mechanics
-  identified through systematic bytecode analysis.
-- End-to-end opening sequence verified:
-  - STARTUP.MPS -> Logo.smk -> MVOP1.smk -> MVTitle.smk -> SCENE_LOAD
-    to Signin.mps
-  - SIGNIN.MPS creates the sign-in UI (6 buttons, player list, keyboard
-    input), wires 8 event handlers
-  - Simulated Start click -> procStartButtonHit -> procEntrySelected
-    -> "Limburger" cheat check (false) -> standard login path ->
-    SCENE_LOAD curScript+".mps" resolves to CHUB.mps
-  - CHUB.mps wires 13 handlers; character clicks (Joni, Socrates,
-    LapTrap, Dealer, Backpack) correctly fire unique per-character logic
-  - CMA.MPS math puzzle loads and initializes its 28-level board
+- A host-side MPS interpreter that loads and runs every one of the
+  game's 43 scripts cleanly.
+- A complete engine runtime for `RQueue` + `RCompositeAction` and six
+  action types - so when scripts say "play sound 30610, then have
+  Joni walk in, then have everyone else walk in in parallel," the
+  engine actually steps through that, fires the right events back, and
+  the script's state machine advances.
+- End-to-end opening sequence verified through the engine:
+  - STARTUP.MPS plays 3 movies via `movie.finished` event chain
+  - `SCENE_LOAD Signin.mps` resolves the curScript expression
+  - SIGNIN.MPS creates `sQueue`, queues the LapTrap intro sound,
+    starts it, the engine plays it, fires `sQueue.finished` back into
+    the interpreter, which fires the `eSQueueDone` handler chain
+  - Simulated Start click runs the full procStartButtonHit ->
+    procEntrySelected pipeline, including the "Limburger" QA cheat
+    check, then SCENE_LOAD curScript+".mps" -> CHUB.mps
+  - CHUB.mps creates `walkInCAct` as an RCompositeAction containing
+    `joniWalkInQAct` (a queue with hide-backpack/walk-in/show-backpack)
+    and 5 inline `CharacterAnimAction` for Santiago, Owen, Leslie,
+    Socrates, LapTrap - all wrapped automatically in anonymous queues
+  - Character clicks (Joni, Socrates, LapTrap, Dealer, Backpack) all
+    fire their unique handlers and queue character speech actions
 
-**What doesn't run yet:** anything where the script's side effects need
-to actually affect the screen, speakers, or file system. All "do something"
-operations are currently logged stubs. Phase 3 (engine runtime classes)
-is where that work begins.
+**What doesn't run yet:** anything where the action's effect needs to
+be *visible*. Speech, animation, and sound are all logged ("PLAY: joni
+speaks (speech #5334)") but not yet drawn or played. That's the next
+chunk of Phase 3 (RCharacter, RAnimation, RPButton) plus Phase 4 (audio
+out / video out / file system).
 
 
 ## 43-script survey results
 
-Every `.MPS` file in the game loaded, parsed, and executed its
-MAIN_PROC + pInit + pStart protocol without errors.
+Every `.MPS` file in the game loads, parses, and executes its
+MAIN_PROC + pInit + pStart protocol with the engine attached.
 
 ```
 script            inst  pool  handlers  notes
@@ -114,62 +120,15 @@ Total: 43/43 scripts pass.
 ```
 
 
-## Full game structure
-
-### Cairo world (16 scripts)
-
-| Script | Role | Characters | Mechanic |
-|--------|------|-----------|----------|
-| CHUB | Hub | Dealer | Scroll/clue/glyph collection with progressive cast reactions |
-| CMA | Math puzzle | Geezar (villain's minion) | 28-level grid with piece variants |
-| CBA1 | Vehicle puzzle | Dealer | Jeep exit mechanic |
-| CBA2 | Build puzzle | Boat Girl | Boat assembly (sail/hull/motor/launch) |
-| CWS1 | Commerce puzzle | Coffee Guy | 361 unique math problems, cups on tray sum to solution |
-| CWS2 | Craft puzzle | Seller | Scissors on fabric (geometry) |
-| CWS3 | Build puzzle | Mason | Containers + sled movement |
-| CWS4 | Commerce puzzle | Exportress | Packages in/out |
-| CLOC01/09/13 | Statue puzzle | - | Assembly of statue parts with state persistence |
-| CLOC02-14 | Location | - | Basic navigation templates |
-
-### Oasis world (9 scripts)
-
-| Script | Role | Characters | Mechanic |
-|--------|------|-----------|----------|
-| OHUB | Hub | Purrina (cat) | Dissolving doors with escalating payoff speeches |
-| OMA | Catapult puzzle | Crocodile (4-cycling dialogue) | Trajectory math with 7-notch ramp, 4-aim positions |
-| OWS1 | Collect puzzle | Fixnuppan, Santiago | Add/remove answer list with adaptive difficulty |
-| OWS2 | Glyph puzzle | Art Mouse, Joni | Hieroglyph replay + reward cutscene |
-| OWS3 | Identify puzzle | Bilko, Leslie | Drag-to-match with wrong-answer handling |
-| OWS4 | Sentence puzzle | Rocko | Sentence building + "mice trip" animation |
-| OLOC02-09 | Location | - | Very uniform templates |
-
-### Pyramid world (4 scripts)
-
-| Script | Role | Characters | Mechanic |
-|--------|------|-----------|----------|
-| PWS1 | Pickup puzzle | Sphinxo | Generic pickup |
-| PWS2 | Word puzzle | Thoth (god of writing) | Drag letter pieces into boxes |
-| PBA | Transition | Person | Scene bridging |
-| PLOC2 | Cutscene | - | Movie playback with interrupt controls |
-| PLOC3 | Transition | Person | Scene bridging |
-
-### Special
-
-| Script | Role |
-|--------|------|
-| STARTUP.MPS | Boot - caches DLLs, declares ~40 global properties, plays 3 intro movies |
-| SIGNIN.MPS | Sign-in screen - 6 buttons, player list, keyboard input, "Limburger" QA cheat |
-| FL.MPS | Teacher/admin panel - 48-button grid (8x6) for level select, 98 player slots |
-
-
-## Verified engine mechanics (discovered through script tracing)
+## Verified engine mechanics
 
 ### Character click escalation
 
 Characters respond differently based on state or click counter:
 
 - **Socrates click:** context-sensitive help based on scene state
-- **Character click (CHUB):** first click has Owen speak, subsequent clicks cycle
+- **Character click (CHUB):** first click has Owen speak, subsequent
+  clicks cycle
 - **Geezar click (CMA):** 4-tier dialogue with level-tiered taunts
 - **Crocodile click (OMA):** cycles through 4 canned lines (mod-4 counter)
 
@@ -188,6 +147,29 @@ different character reactions with increasing ensemble size:
 
 `kLastClueSpchIDs.whichDataset` means **multiple possible endings**
 depending on which randomly-selected dataset the game uses.
+
+### Cairo hub walk-in choreography
+
+When the player enters the hub on a return visit, the game queues a
+`walkInCAct` RCompositeAction containing 6 parallel children. The
+interpreter and engine assemble this exactly as designed:
+
+```
+walkInCAct (RCompositeAction, 6 children):
+  joniWalkInQAct (real queue, 3 actions):
+    PropertyAction: closedBackpack.visible = 0
+    CharacterAnimAction: joni walks in
+    PropertyAction: closedBackpack.visible = 1
+  walkInCAct_anon0: Santiago anim
+  walkInCAct_anon1: Owen anim
+  walkInCAct_anon2: Leslie anim
+  walkInCAct_anon3: Socrates anim
+  walkInCAct_anon4: LapTrap anim
+```
+
+Inline actions (`add(CharacterAnimAction, "santiago", id)`) are
+auto-wrapped in anonymous queues so the composite can treat all
+children uniformly.
 
 ### Door-dissolve payoff (OHUB)
 
@@ -251,7 +233,8 @@ docs):
 - **RAnimation** - animated sprite with play/pause control
 - **RCompositeAction** - multi-action wrapper for queuing
 - **CharacterSpeechAction** / **CharacterAnimAction** /
-  **PropertyAction** / **SoundAction** / **AnimAction** - atomic queue items
+  **PropertyAction** / **SoundAction** / **AnimAction** /
+  **MovieAction** - atomic queue items
 - **RLapTrap** - the in-game hint device (context-sensitive per-location)
 
 ### Characters catalogued
@@ -290,7 +273,7 @@ make
 Produces `cf4.elf`. Load in PCSX2 via System -> Run ELF.
 
 
-## MPS bytecode interpreter
+## MPS bytecode interpreter (Phase 2 - complete)
 
 The interpreter (`src/mps_interp.c`) is a complete reimplementation of
 the game engine's scripting VM.
@@ -307,37 +290,35 @@ u32  pool_count                       (includes 3 pre-allocated)
 N *  pool_entry                       (from entry 3)
 ```
 
-### Opcode table
+### Opcode table (28 opcodes, all handled)
 
-All 28 opcode values seen in any script are handled:
-
-| Op | Name            | Status  |
-|----|-----------------|---------|
-|  6 | SCENE_JUMP      | Full (with return-target skip) |
-|  7 | ASSIGN          | Full    |
-|  8 | FOR_INIT        | Full (with skip-frame for undefined end) |
-|  9 | FOR_STEP        | Full    |
-| 10 | IF_FALSE        | Full    |
-| 11 | GOTO            | Full    |
-| 12 | BOOL_TEST       | Full (via expression evaluator) |
-| 13 | NOP             | Full    |
-| 14 | STR_CONCAT      | Stub (pool expressions used instead) |
-| 15 | RETURN          | Full (with proc-entry skip fix) |
-| 18 | EVAL_ASSIGN     | Full    |
-| 19 | DESTROY         | Full    |
-| 21 | CALL_BUILTIN    | Partial |
-| 22 | YIELD           | Full    |
-| 23 | CALL_METHOD     | Partial (generic handler registration) |
-| 24 | TIMER_B         | Stub    |
-| 26 | DISABLE_DATA    | Stub    |
-| 27 | ENABLE_DATA     | Stub    |
-| 28 | DELAY           | Stub    |
-| 29 | NOP2            | Full    |
-| 35 | CALL_METHOD_35  | Partial |
-| 36 | CALL_METHOD_RET | Partial |
-| 37 | MAIN_PROC       | Full    |
-| 40 | GLOBAL_PROP     | Partial |
-| 45 | SCENE_LOAD      | Full    |
+|  Op | Name             | Status                                     |
+|-----|------------------|--------------------------------------------|
+|   6 | SCENE_JUMP       | Full (with proc-entry-skip after RETURN)   |
+|   7 | ASSIGN           | Full                                       |
+|   8 | FOR_INIT         | Full (with skip-frame for undefined end)   |
+|   9 | FOR_STEP         | Full                                       |
+|  10 | IF_FALSE         | Full                                       |
+|  11 | GOTO             | Full                                       |
+|  12 | BOOL_TEST        | Full (via expression evaluator)            |
+|  13 | NOP              | Full                                       |
+|  14 | STR_CONCAT       | Stub (pool expressions used instead)       |
+|  15 | RETURN           | Full                                       |
+|  18 | EVAL_ASSIGN      | Full                                       |
+|  19 | DESTROY          | Full (notifies engine)                     |
+|  21 | CALL_BUILTIN     | Partial                                    |
+|  22 | YIELD            | Full                                       |
+|  23 | CALL_METHOD      | Partial (handler reg + engine routing)     |
+|  24 | TIMER_B          | Stub                                       |
+|  26 | DISABLE_DATA     | Stub                                       |
+|  27 | ENABLE_DATA      | Stub                                       |
+|  28 | DELAY            | Stub                                       |
+|  29 | NOP2             | Full                                       |
+|  35 | CALL_METHOD_35   | Partial (handler reg + engine routing)     |
+|  36 | CALL_METHOD_RET  | Partial                                    |
+|  37 | MAIN_PROC        | Full                                       |
+|  40 | GLOBAL_PROP      | Partial                                    |
+|  45 | SCENE_LOAD       | Full                                       |
 
 ### Expression evaluator
 
@@ -356,50 +337,80 @@ Supported operators (with standard arithmetic precedence):
 | `@` | find | 1-based position of substring in string |
 | `( )` | grouping | |
 
-### Variable store
+### State
 
-- 256 slots holding either int or string values
-- Flat global namespace (per-object properties deferred to Phase 3)
+- 256 variable slots
+- 16 nested for-loops
+- 32-deep call stack
+- 128 event handlers
+- Pending-script flag for SCENE_LOAD
 
-### Loop stack
 
-- Up to 16 nested for-loops
-- Tracks counter, end value, step, body entry point
-- Skip-flag for loops where FOR_INIT can't resolve its end operand
+## Engine runtime (Phase 3 - 20%)
 
-### Call stack
+The engine module (`src/engine.c`) owns live engine objects (queues,
+characters, etc.) and drives their state transitions.
 
-- Up to 32 levels
-- SCENE_JUMP pushes, RETURN pops
-- After return, if landed on a procedure entry point (collision), skip
-  past it to avoid re-running the proc
-- Fresh stack on every event fire
+### Architecture
 
-### Event handler table
+```
+mps_interp.c               engine.c
+    |                          |
+    | EVAL_ASSIGN x = new RQueue
+    +--> engine_create_queue("x")
+    |
+    | sQueue.add(SoundAction, 30610)
+    +--> engine_queue_add_sound("sQueue", 30610)
+    |
+    | sQueue.start
+    +--> engine_queue_start("sQueue")
+    |
+    | (game loop ticks)
+    +--> engine_tick(ctx)  ->  fires sQueue.finished into interpreter
+                                via mps_fire_event
+```
 
-- Up to 128 handlers
-- Registration: any `CALL_METHOD(obj, event_name, procRef)` where
-  procRef is a pool entry with type=3 and a string name registers the
-  handler
-- Re-registration replaces existing entries
-- DESTROY on an object removes all its handlers
+The same module runs on host (where actions print to stdout) and on
+PS2 (where actions will eventually call into the renderer/audio
+subsystems). This keeps the test loop and the real loop in lockstep.
 
-### Public API
+### Implemented action types
 
-- `mps_load`, `mps_step`, `mps_running`, `mps_free`
-- `mps_call_proc(name)`, `mps_find_proc(name)`, `mps_fire_event`
-- `mps_list_handlers`, `mps_pending_script`
-- Variable helpers: `mps_var_find`, `mps_var_set_int/str`, `mps_var_get_int`
+| Action | Args | Status |
+|--------|------|--------|
+| CharacterSpeechAction | who, speech_id | Logged |
+| CharacterAnimAction | who, anim_id | Logged |
+| PropertyAction | obj, prop, value | Logged |
+| SoundAction | sfx_id | Logged |
+| AnimAction | anim_id, z, frame_start, hold_last | Logged |
+| MovieAction | movie_name, sound_id | Logged |
 
-### Host-side testing tools
+"Logged" means the action prints what it would do but doesn't yet
+draw/play. The structure is correct; the side effects come in Phase 4.
 
-- **`tools/mps_test.c`** - runs any single script with full trace
-- **`tools/mps_chain_test.c`** - simulates the full opening sequence
-- **`tools/script_survey.c`** - runs every script through MAIN_PROC +
-  pInit + pStart, prints summary table
-- **`tools/survey_proc.c`** - per-procedure breakdown for diagnostics
-- **`tools/scan_procs.py`** - pool scanner listing all named procedures
-- **`tools/uniq_events.py`** - per-script unique-event fingerprint
+### Implemented object types
+
+| Object | Status | Notes |
+|--------|--------|-------|
+| RQueue | **Working** | add, start, tick, finished-event |
+| RCompositeAction | **Working** | child refs + auto-wrapped inline |
+
+### Pending object types (in priority order)
+
+1. **RCharacter** - animated drawable characters (used everywhere)
+2. **RAnimation** - standalone animated sprite
+3. **RPButton** - clickable UI button (first renderer bridge!)
+4. **RScenePort** - scene container, event routing for backgroundClicked
+5. **RSelList** - scrollable selection list (sign-in)
+6. **RKbdInp** - on-screen keyboard
+7. **RGraphicAnswer** - draggable letter/number piece (PWS2)
+8. **RLapTrap** - context-sensitive hint device
+9. **RBackPack** - inventory
+10. **RSmackerMovie** - actual video playback (Phase 5 territory)
+11. **RHotSpot** - clickable areas
+12. **RText** - text overlay
+13. **RSound** - managed sound object
+14. **RWorldPort** - top-level scene manager (mostly stubbed via gPort)
 
 
 ## Project layout
@@ -413,6 +424,7 @@ cf4_ps2/
 |   |-- main.c             PS2 entry point
 |   |-- renderer.c/.h      PS2 GS renderer
 |   |-- mps_interp.c/.h    MPS bytecode interpreter
+|   |-- engine.c/.h        Engine runtime classes
 |   |-- embedded_sprite.h  Test sprite (Joni)
 |   `-- embedded_anim.h    Test sprite (Santiago, animated)
 |
@@ -448,25 +460,10 @@ cf4_ps2/
 
 ## What's left to do
 
-### Phase 3 (Engine runtime classes) - 0% done
+### Phase 3 (Engine runtime classes) - 20% done
 
-Rebuild in C, wired through the interpreter. Priority order based on how
-often each class appears in the verified game flow:
-
-1. **RQueue** - used everywhere. Needs add/start/finished semantics.
-2. **RCompositeAction** - multi-action wrapper.
-3. **CharacterSpeechAction** / **CharacterAnimAction** /
-   **PropertyAction** / **SoundAction** / **AnimAction** - atomic queue items.
-4. **RCharacter** - animated drawable characters.
-5. **RAnimation** - standalone animated sprite.
-6. **RScenePort** - scene container + event routing.
-7. **RPButton** - clickable UI button (first renderer bridge).
-8. **RSelList** - scrollable selection list.
-9. **RKbdInp** - on-screen keyboard.
-10. **RGraphicAnswer** - draggable puzzle piece.
-11. **RLapTrap** - hint device.
-12. **RSmackerMovie** - video playback (see Phase 5).
-13. **RSound** / **RText** / **RHotSpot** / **RBackPack** / **RWorldPort**.
+Continuing in priority order. Each class adds another piece of visible
+gameplay or scene logic.
 
 ### Phase 4 (I/O) - 0%
 
@@ -504,14 +501,14 @@ make
 **Interpreter side (host Linux):**
 
 ```sh
-gcc -I src tools/mps_chain_test.c src/mps_interp.c -o tools/mps_chain_test
+gcc -I src tools/mps_chain_test.c src/mps_interp.c src/engine.c -o tools/mps_chain_test
 ./tools/mps_chain_test
 ```
 
 Full 43-script survey:
 
 ```sh
-gcc -I src tools/script_survey.c src/mps_interp.c -o tools/script_survey
+gcc -I src tools/script_survey.c src/mps_interp.c src/engine.c -o tools/script_survey
 tools/script_survey 2>/dev/null | grep -E "inst="
 ```
 
@@ -520,8 +517,9 @@ tools/script_survey 2>/dev/null | grep -E "inst="
 
 This is a fan preservation project. ClueFinders and all its assets are
 copyright The Learning Company / Knowledge Adventure. The port code
-(renderer, tools, interpreter) is hobbyist work. Engine understanding
-comes from Ghidra decompilation of the original executable.
+(renderer, tools, interpreter, engine) is hobbyist work. Engine
+understanding comes from Ghidra decompilation of the original
+executable.
 
 Not for commercial distribution. The goal is to make this great
 educational game playable on hardware it was never released for.
