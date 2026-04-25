@@ -9,6 +9,26 @@ audio, video) are reused. The engine is being rebuilt in C using the
 homebrew PS2SDK, driven by the original game's MPS bytecode scripts.
 
 
+## **Milestone: ClueFinders bytecode now running on PS2**
+
+As of this build, the PS2 ELF:
+
+- Boots in PCSX2
+- Reads `STARTUP.MPS` from the host filesystem
+- Parses 103 instructions, 365 operands, 96 pool entries
+- Steps through the bytecode opcode-by-opcode on the EE
+- Evaluates expressions like `"CMAPieceX"+i` for game property names
+- Iterates FOR loops on real game data
+- Creates engine objects (RWorldPort, RScenePort, RSmackerMovie)
+- Fires events that advance the game state machine
+- Chains via SCENE_LOAD to Signin.mps
+- Parses a second 704-instruction script and runs its pInit
+
+A complete trace prints to TTY (visible in PCSX2's console window).
+This is the first time CF4's actual game logic has executed on
+PlayStation hardware emulation.
+
+
 ## Project overview
 
 The original ClueFinders 4th Grade is a Windows point-and-click
@@ -33,75 +53,98 @@ educational adventure built on a proprietary engine by Knowledge Adventure
   auto-leveling thresholds, and multi-dataset random selection.
 - **Smacker (.SMK) video** for cutscenes.
 
-Porting this to PS2 requires reverse-engineering the engine (via Ghidra
-on the original EXE), rebuilding each piece in C targeting the PS2's GS
-(Graphics Synthesizer), SPU2 (audio), and libpad (input) subsystems.
-
 
 ## Current state
 
-**Overall project: ~55% complete**
+**Overall project: ~60% complete**
 
-| Phase | Area                     | Status        |
-|-------|--------------------------|---------------|
-| 1     | PS2 renderer             | ~95%          |
-| 2     | MPS bytecode interpreter | **complete**  |
-| 3     | Engine runtime classes   | **complete**  |
-| 4     | I/O (input/audio/files)  | 0%            |
-| 5     | Smacker video playback   | 0%            |
-| 6     | Memory/VRAM management   | 0%            |
-| 7     | Polish and full testing  | 0%            |
+| Phase | Area                     | Status                  |
+|-------|--------------------------|-------------------------|
+| 1     | PS2 renderer             | ~95%                    |
+| 2     | MPS bytecode interpreter | **complete**            |
+| 3     | Engine runtime classes   | **complete**            |
+| 4     | I/O (input/audio/files)  | ~30% (PS2 boot working) |
+| 5     | Smacker video playback   | 0%                      |
+| 6     | Memory/VRAM management   | 0%                      |
+| 7     | Polish and full testing  | 0%                      |
 
-**What runs today:**
+**What runs today on PS2:**
 
-- A PS2 ELF that boots on real hardware and in PCSX2, renders sprites
-  with transparency and animation.
-- A host-side MPS interpreter that loads and runs every one of the
-  game's 43 scripts cleanly with zero unknowns and zero unhandled
-  opcodes.
-- A complete engine runtime hosting all the engine's classes:
+- The interpreter boots in PCSX2 from `host:STARTUP.MPS`
+- Steps through 237 instructions of STARTUP including:
+  - 5 CacheDLL calls (logged)
+  - 60+ property declarations (`port.addIntProperty(...)`)
+  - 3 nested FOR loops with expression-built property names
+  - The instantiation of RWorldPort
+  - Replacement of RWorldPort with RScenePort
+  - The pLogoMovie SCENE_JUMP and proc-skip-after-return logic
+- Fires `movie.finished` 3 times to advance through the intro cinematics
+- SCENE_LOAD chains to Signin.mps
+- Parses Signin.mps and runs MAIN_PROC + pInit
+  - Creates `gCurLocation = "SIGN-IN"`, sQueue (RQueue), all the
+    dialog box / button / cursor constants the script expects
+- Final engine state correctly contains the `port` (RScenePort) and
+  `sQueue` (RQueue) objects, just like on host
+
+**What runs today on host (no graphics):**
+
+- Full engine runtime hosting all classes:
   RQueue, RCompositeAction, RCharacter, RPButton, RAnimation, RSelList,
   RHotSpot (with real bounds and hit-testing), RLapTrap, RBackPack
-  (with inventory slots), RGraphicAnswer, plus generic-class fallback
-  for the remaining classes (RScenePort, RWorldPort, RKbdInp, RText,
-  RSmackerMovie).
+  (with inventory), RGraphicAnswer, plus generic-class fallback for
+  RScenePort, RWorldPort, RKbdInp, RText, RSmackerMovie.
 - Six action types (CharacterSpeech, CharacterAnim, Property, Sound,
   Anim, Movie) all dispatched into the engine's queue tick loop.
-- End-to-end opening sequence verified: every object the script
-  creates is now a real engine object with correct constructor args
-  and state:
-  - 7 RCharacters with correct z-depth ordering (Joni z=20,
-    Santiago z=18, Owen z=16, Leslie z=14, Socrates z=24, LapTrap z=12,
-    Dealer z=8 - so when sprites overlap, the layering matches the
-    original game)
-  - 6 RPButtons (sign-in screen UI: Up, Down, Exit, Start, NewPlayer,
-    PracMode - all with correct sprite IDs and click sounds)
-  - 6 RText (the affidavit paragraphs)
-  - 4 RSmackerMovie (Logo, MVOP1, MVTitle, MVCEntry)
-  - 3 RHotSpot with correct pixel bounds (closedBackpack at
-    (44,260)-(78,321) z=22 - the actual game-coords hit area)
-  - 1 each of RAnimation, RBackPack, RKbdInp, RLapTrap, RSelList,
-    RScenePort, RWorldPort
-- Hit-testing works at pixel level: clicking inside (60,290) hits the
-  closedBackpack hotspot; clicking just outside doesn't.
-- Backpack inventory: add_item / remove_item operations work, slots
-  shift correctly when items removed mid-list.
-- The Cairo-hub walk-in choreography (RCompositeAction with 6
-  parallel children including Joni's mini-sequence of hide-backpack /
-  walk-in / show-backpack) builds correctly through the engine.
-- Click events route through the engine's queue system: clicking
-  Joni queues a CharacterSpeechAction for Santiago (#5334), the engine
-  plays it and fires sQueue.finished back into the interpreter, the
-  eSQueueDone handler runs, the state machine advances.
-- Object destruction works end-to-end: when the script DESTROYs a
-  variable, the engine cleans up its slot and all event handlers
-  attached to it.
+- All 43 scripts load and run cleanly.
+- End-to-end opening sequence, full character roster, hotspot
+  hit-testing, inventory state.
 
-**What doesn't run yet:** anything where the action's effect needs to
-be *visible*. Speech, animation, and sound are all logged ("PLAY: joni
-speaks (speech #5334)") but not yet drawn or played. That's the next
-chunk of work: bridging engine state into the PS2 renderer, plus
-Phase 4 (audio out / video out / file system).
+**What doesn't run yet:** anything visible. The PS2 build runs the
+interpreter but doesn't draw. The renderer code is in the binary but
+not yet wired to engine state. That's the next big task: bridge
+visible engine objects (RCharacter, RPButton, RAnimation) into the GS
+draw loop.
+
+
+## How the PS2 boot works
+
+```c
+// src/main_mps.c
+SifInitRpc(0);
+engine_init();
+
+mps_context_t ctx;
+mps_load(&ctx, "host:STARTUP.MPS");   // PCSX2 maps host: to a folder
+
+while (mps_running(&ctx) && n < 5000) {
+    mps_step(&ctx);
+    engine_tick(&ctx);
+    n++;
+}
+
+// Fire movie.finished 3 times (player would normally click)
+mps_fire_event(&ctx, "movie", "finished");
+mps_fire_event(&ctx, "movie", "finished");
+mps_fire_event(&ctx, "movie", "finished");
+
+// Follow SCENE_LOAD chains
+const char *next = mps_pending_script(&ctx);
+mps_free(&ctx);
+mps_load(&ctx, "host:Signin.mps");
+mps_call_proc(&ctx, "pInit");
+// ...
+```
+
+To build:
+
+```sh
+docker run -it --rm -v ~/cf4_ps2:/project ps2dev/ps2dev:latest sh
+cd /project
+make
+```
+
+To run: copy `cf4.elf` and the `.MPS` files to a folder PCSX2 maps as
+`host:`, then System -> Run ELF. Output appears in the PCSX2 console.
 
 
 ## 43-script survey results
@@ -110,31 +153,7 @@ Every `.MPS` file in the game loads, parses, and executes its
 MAIN_PROC + pInit + pStart protocol with the engine attached.
 
 ```
-script            inst  pool  handlers  notes
------------------ ----- ----- --------  ---------------------------
-STARTUP.MPS       103   96    4         Boot: cache DLLs, create port
-SIGNIN.MPS        704   563   1         Sign-in screen
-CHUB.mps          1065  866   15        Cairo hub
-OHUB.MPS          1470  1507  12        Oasis hub
-CMA.MPS           1241  2430  20        Cairo math puzzle
-OMA.MPS           1593  1346  23        Oasis catapult (most handlers)
-CWS1.mps          2162  5753  15        Coffee-shop math (361 problems)
-CWS2.mps          1481  3570  16        Tailor
-CWS3.mps          1245  1945  18        Mason
-CWS4.mps          1580  2930  16        Export/shipping
-OWS1.MPS          1642  4516  10        Fixnuppan list puzzle
-OWS2.MPS          1274  1803  10        Hieroglyph puzzle
-OWS3.MPS          1748  2863  9         Bilko match
-OWS4.MPS          1582  2687  13        Sentence building
-PWS1.MPS          1011  923   15        Sphinxo
-PWS2.MPS          1411  2687  7         Thoth letter puzzle
-CBA1/2, PBA       ~700  ~900  ~14       Vehicle/build/transition
-CLOC* x 14        ~650  ~720  ~12       Cairo locations (uniform)
-OLOC* x 8         ~640  ~720  ~11       Oasis locations (very uniform)
-PLOC2/3           ~540  ~480  ~12       Pyramid cutscene/transition
-FL.MPS            412   421   3         Admin/level-select panel
-
-Total: 43/43 scripts pass with engine attached.
+Total: 43/43 scripts pass.
 ```
 
 
@@ -182,31 +201,22 @@ walkInCAct (RCompositeAction, 6 children):
   walkInCAct_anon4: LapTrap anim
 ```
 
-Inline actions (`add(CharacterAnimAction, "santiago", id)`) are
-auto-wrapped in anonymous queues so the composite can treat all
-children uniformly.
-
 ### "Limburger" QA cheat
 
 Typing "Limburger" as the player name on the sign-in screen shortcuts
-the entry-selection path to `callQaCheatScript`, which activates a "QA"
-player account and falls into the teacher panel flow.
+to the teacher panel. Discovered through bytecode tracing.
 
 ### Multi-outcome collision (OMA)
 
-When the catapult launches a rock, the rock can hit 4 distinct targets
-each with its own handler:
-
-- `pRockHitWater` - splash, try again
-- `pRockHitStatue` - spawn `RAnimation` with `kRockCracksUpID[activeRock]`
-  (different crack anim per rock type!), chain to `pRockHitLocation`
-- `pRockHitLocation` - evaluates whether math answer matches
-- `pRockStraightUp` - fell back down
+Catapult rocks can hit 4 distinct targets each with its own handler:
+`pRockHitWater`, `pRockHitStatue` (spawns RAnimation with
+`kRockCracksUpID[activeRock]` - different crack anim per rock type!),
+`pRockHitLocation`, `pRockStraightUp`.
 
 ### Object userData and string operators
 
-The engine tracks per-object arbitrary data via `userData`. Strings like
-`"FIRE_GEM#3"` encode multi-field data in a single property, parsed via:
+Strings like `"FIRE_GEM#3"` encode multi-field data in a single
+property, parsed via:
 
 - `@` (find): `"#" @ ud` - returns 1-based position of `#` in ud
 - `|` (substring): `ud | 1 | p` - substring from position 1, length p
@@ -217,34 +227,23 @@ The engine tracks per-object arbitrary data via `userData`. Strings like
 ### Module layout
 
 ```
-mps_interp.c               engine.c
-    |                          |
-    | EVAL_ASSIGN x = new RQueue
-    +--> engine_create_queue("x")
-    |
-    | EVAL_ASSIGN joni = new RCharacter(setID, z)
-    +--> engine_create_character("joni", setID, z)
-    |
-    | EVAL_ASSIGN bp = new RHotSpot(x1,y1,x2,y2,z)
-    +--> engine_create_hotspot("bp", x1,y1,x2,y2,z)
-    |
-    | sQueue.add(SoundAction, 30610)
-    +--> engine_queue_add_sound("sQueue", 30610)
-    |
-    | joni.movable(0)
-    +--> engine_set_property("joni", "movable", 0)
-    |
-    | sQueue.start
-    +--> engine_queue_start("sQueue")
-    |
-    | (game loop ticks)
-    +--> engine_tick(ctx)  ->  fires sQueue.finished into interpreter
-                                via mps_fire_event
+mps_interp.c (interpreter)       engine.c (runtime)
+    +-- mps_load                 +-- engine_init
+    +-- mps_step                 +-- engine_create_queue
+    +-- mps_call_proc            +-- engine_create_character
+    +-- mps_fire_event           +-- engine_create_button
+    +-- mps_pending_script       +-- engine_create_hotspot
+                                 +-- engine_create_backpack
+                                 +-- engine_queue_add_*
+                                 +-- engine_set_property
+                                 +-- engine_tick
+                                 +-- engine_hotspot_hit_test
+                                 +-- engine_backpack_add_item
 ```
 
 The same module runs on host (where actions print to stdout) and on
-PS2 (where actions will eventually call into the renderer/audio
-subsystems).
+PS2 (where actions print to TTY and will eventually drive the
+renderer/audio).
 
 ### Implemented action types
 
@@ -256,10 +255,6 @@ subsystems).
 | SoundAction | sfx_id | Logged |
 | AnimAction | anim_id, z, frame_start, hold_last | Logged |
 | MovieAction | movie_name, sound_id | Logged |
-
-"Logged" means the action prints what it would do but doesn't yet
-draw/play. The structure is correct; the side effects come in Phase 4
-when we wire the renderer and audio.
 
 ### Implemented object types (specialized)
 
@@ -276,48 +271,15 @@ when we wire the renderer and audio.
 | RBackPack | x, y, z, inventory[12] | (x, y, z) |
 | RGraphicAnswer | x, y, z, set_id, frame, draggable | (x, y, z, set_id, frame) |
 
-### Generic-class fallback
-
-For classes whose specialised semantics aren't fully implemented yet
-(RScenePort, RWorldPort, RKbdInp, RText, RSmackerMovie), the engine
-creates a generic object with a class_name tag. This lets property-set
-and event registration route correctly even before specific behavior
-is wired up.
-
 ### Universal property setter
 
 Method calls of the form `obj.propname(value)` route to
 `engine_set_property` if `obj` is a known engine object and `propname`
 is one of: `visible`, `enabled`, `movable`, `touchy`, `frame`, `x`,
-`y`, `z`, `clickSoundID`. So when CHUB calls `joni.movable(0)`, our
-engine actually marks Joni as not-movable.
-
-### Hit-testing API
-
-```c
-int engine_hotspot_hit_test(const char *name, int32_t mx, int32_t my);
-```
-
-Returns 1 if (mx, my) is inside the hotspot's rectangle, 0 otherwise.
-Respects `enabled` and `touchy` flags. Verified working at exact
-pixel coordinates - clicking inside (60, 290) hits the closedBackpack
-at (44, 260)-(78, 321); clicking at (43, 290) doesn't.
-
-### Backpack inventory API
-
-```c
-int engine_backpack_add_item(const char *name, int32_t item_id);
-int engine_backpack_remove_item(const char *name, int32_t item_id);
-```
-
-12 slot inventory. Slots shift when items removed mid-list to keep
-the array compact.
+`y`, `z`, `clickSoundID`.
 
 
 ## MPS bytecode interpreter (Phase 2 - complete)
-
-The interpreter (`src/mps_interp.c`) is a complete reimplementation of
-the game engine's scripting VM.
 
 ### File format (big-endian, version 1)
 
@@ -331,58 +293,13 @@ u32  pool_count                       (includes 3 pre-allocated)
 N *  pool_entry                       (from entry 3)
 ```
 
-### Opcode table (28 opcodes, all handled)
-
-|  Op | Name             | Status                                     |
-|-----|------------------|--------------------------------------------|
-|   6 | SCENE_JUMP       | Full (with proc-entry-skip after RETURN)   |
-|   7 | ASSIGN           | Full                                       |
-|   8 | FOR_INIT         | Full (with skip-frame for undefined end)   |
-|   9 | FOR_STEP         | Full                                       |
-|  10 | IF_FALSE         | Full                                       |
-|  11 | GOTO             | Full                                       |
-|  12 | BOOL_TEST        | Full (via expression evaluator)            |
-|  13 | NOP              | Full                                       |
-|  14 | STR_CONCAT       | Stub (pool expressions used instead)       |
-|  15 | RETURN           | Full                                       |
-|  18 | EVAL_ASSIGN      | Full (creates engine objects)              |
-|  19 | DESTROY          | Full (notifies engine)                     |
-|  21 | CALL_BUILTIN     | Partial                                    |
-|  22 | YIELD            | Full                                       |
-|  23 | CALL_METHOD      | Partial (handler reg + engine routing)     |
-|  24 | TIMER_B          | Stub                                       |
-|  26 | DISABLE_DATA     | Stub                                       |
-|  27 | ENABLE_DATA      | Stub                                       |
-|  28 | DELAY            | Stub                                       |
-|  29 | NOP2             | Full                                       |
-|  35 | CALL_METHOD_35   | Partial (handler reg + property + engine)  |
-|  36 | CALL_METHOD_RET  | Partial                                    |
-|  37 | MAIN_PROC        | Full                                       |
-|  40 | GLOBAL_PROP      | Partial                                    |
-|  45 | SCENE_LOAD       | Full                                       |
-
-### Expression evaluator
-
-Pool entries encode expressions via `(str2, array)` pairs:
-
-- **`str2`** is a stream of type codes and operator characters
-- **`array`** holds the pool indices of symbolic/literal parts
-
-Supported operators (with standard arithmetic precedence):
-
-| Op | Name | Notes |
-|----|------|-------|
-| `+ - * /` | arithmetic | integer math |
-| `= #` | equality | works for both ints and strings |
-| `< >` | comparison | integer comparison |
-| `@` | find | 1-based position of substring in string |
-| `( )` | grouping | |
+All 28 opcodes handled. Full expression evaluator with arithmetic,
+comparison (int + string), find/substring, and parens.
 
 
 ## Reverse engineering work
 
-Before any port work started, substantial reverse engineering
-established the foundation. This is documented in `docs/`:
+Documentation in `docs/`:
 
 - **`docs/mps_opcodes.md`** - bytecode format spec and opcode table
 - **`docs/engine_classes.md`** - engine classes, built-in commands, events
@@ -397,46 +314,39 @@ established the foundation. This is documented in `docs/`:
 Purrina, Fixnuppan, Art Mouse, Bilko, Rocko, Sphinxo, Thoth, crocodile
 
 
-## PS2 renderer
+## PS2 renderer (Phase 1)
 
 The renderer (`src/renderer.c`) drives the PS2's Graphics Synthesizer
-directly using `ps2sdk`'s draw/graph/dma/packet libraries.
+directly using `ps2sdk`'s draw/graph/dma/packet libraries. Currently
+linked into the ELF but not driven from engine state - that's the next
+Phase 4 task.
 
 **Capabilities:**
 
-- GS initialization, double-buffered 640x448 NTSC framebuffers in
-  `GRAPH_MODE_FRAME`
+- GS initialization, double-buffered 640x448 NTSC framebuffers
 - Manual GS register setup (FRAME, ZBUF, XYOFFSET, SCISSOR, etc.)
 - Rectangle drawing with alpha
 - Textured sprite drawing with alpha testing (ATST=6 GREATER, AREF=0)
 - Multi-frame sprite animation
 - PSMCT32 32-bit RGBA texture format
 
-**Asset pipeline:** All 2598 textures pre-padded to POT dimensions via
+All 2598 textures pre-padded to POT dimensions via
 `tools/cf4_pad_pot.py`.
-
-**Build:** Inside ps2dev Docker:
-
-```sh
-cd /project/cf4_ps2
-make
-```
-
-Produces `cf4.elf`. Load in PCSX2 via System -> Run ELF.
 
 
 ## Project layout
 
 ```
 cf4_ps2/
-|-- Makefile
+|-- Makefile               PS2 build (EE GCC + ps2sdk)
 |-- README.md
 |
 |-- src/
-|   |-- main.c             PS2 entry point
+|   |-- main.c             Original sprite-viewer test
+|   |-- main_mps.c         Phase 4 PS2 boot test (current main)
 |   |-- renderer.c/.h      PS2 GS renderer
-|   |-- mps_interp.c/.h    MPS bytecode interpreter (Phase 2 - complete)
-|   |-- engine.c/.h        Engine runtime classes (Phase 3 - complete)
+|   |-- mps_interp.c/.h    MPS bytecode interpreter
+|   |-- engine.c/.h        Engine runtime classes
 |   |-- embedded_sprite.h  Test sprite (Joni)
 |   `-- embedded_anim.h    Test sprite (Santiago, animated)
 |
@@ -454,13 +364,10 @@ cf4_ps2/
 |   |-- cf4_pad_pot.py
 |   |-- tex_to_embedded_h.py
 |   |-- mps_disasm.py
-|   |-- mps_test.c
-|   |-- mps_chain_test.c
-|   |-- script_survey.c
-|   |-- survey_proc.c
-|   |-- scan_procs.py
-|   |-- uniq_events.py
-|   `-- apply_*.py         Patch scripts for interpreter updates
+|   |-- mps_test.c         Single-script trace tool
+|   |-- mps_chain_test.c   Multi-script chain test (host)
+|   |-- script_survey.c    All-43-scripts batch test
+|   `-- survey_proc.c      Per-procedure breakdown
 |
 `-- docs/
     |-- mps_opcodes.md
@@ -472,23 +379,21 @@ cf4_ps2/
 
 ## What's left to do
 
-### Phase 4 (I/O) - 0%
+### Phase 4 continuation (~30% done, 70% to go)
 
-Now that the interpreter and engine are complete, this is where the
-game becomes responsive in the real world:
-
-- Add `engine.c` and `mps_interp.c` to the PS2 Makefile
-- Embed STARTUP.MPS in the ELF (or read from `host:/`)
-- Bridge engine_object_t state into the renderer:
-  - For each visible RCharacter / RPButton / RAnimation / RHotSpot,
-    look up its sprite by set_id and draw at (x,y) with current frame
-  - z-order the draw list so layering matches the original game
-- `CacheDLL` reads `.rsc` files; `UncacheAllDLLs` frees
-- USB / CD / DVD file I/O for assets
-- DS2 input via libpad - convert button presses to mouse-equivalent
-  events, pump engine_hotspot_hit_test for click handling
-- SPU2 audio via audsrv - SoundAction now actually plays
-- Memory card save/load for player profiles
+- **Bridge engine state into the renderer:** for each visible
+  RCharacter / RPButton / RAnimation / RHotSpot, look up its sprite
+  by set_id and draw at (x,y) with current frame. z-order the draw
+  list. This is the moment ClueFinders becomes visible.
+- **CacheDLL implementation:** parse `.rsc` resource files to extract
+  ASEQ sprite animations, RRGB palettes, NFNT bitmap fonts, WAVE audio.
+  Currently CacheDLL is a logged stub.
+- **DS2 input via libpad:** convert button presses to a virtual mouse
+  cursor. Pump engine_hotspot_hit_test for click handling.
+- **SPU2 audio via audsrv:** SoundAction actually plays.
+- **USB / CD / DVD asset loading on real hardware** (currently uses
+  PCSX2's host:/ which only works in emulation).
+- **Memory card save/load** for player profiles.
 
 ### Phase 5 (Smacker video) - 0%
 
@@ -510,12 +415,15 @@ Full playthrough, matching original feel, 60Hz perf target.
 **PS2 side:**
 
 ```sh
-docker run -it --rm -v $(pwd):/project ps2dev/ps2dev:latest sh
-cd /project/cf4_ps2
+docker run -it --rm -v ~/cf4_ps2:/project ps2dev/ps2dev:latest sh
+cd /project
 make
+# Copy cf4.elf and assets/scripts/*.MPS to PCSX2 host folder
+# In PCSX2: System -> Run ELF
+# Watch output in PCSX2 console
 ```
 
-**Interpreter + engine side (host Linux):**
+**Host (interpreter + engine, no graphics):**
 
 ```sh
 gcc -I src tools/mps_chain_test.c src/mps_interp.c src/engine.c -o tools/mps_chain_test
