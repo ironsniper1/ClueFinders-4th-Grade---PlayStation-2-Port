@@ -25,7 +25,7 @@ educational adventure built on a proprietary engine by Knowledge Adventure
 - **Class-based engine runtime** with ~20 classes: RWorldPort, RScenePort,
   RSprite, RCharacter, RSound, RSmackerMovie, RQueue, RCompositeAction,
   RPButton, RSelList, RKbdInp, RLapTrap, RGraphicAnswer, RHotSpot,
-  RAnimation, etc.
+  RAnimation, RBackPack.
 - **Event-driven execution model:** scripts register event handlers
   (`movie.finished`, `character.mouseDown`, etc.) and the engine pumps
   events into them.
@@ -40,13 +40,13 @@ on the original EXE), rebuilding each piece in C targeting the PS2's GS
 
 ## Current state
 
-**Overall project: ~50% complete**
+**Overall project: ~55% complete**
 
 | Phase | Area                     | Status        |
 |-------|--------------------------|---------------|
 | 1     | PS2 renderer             | ~95%          |
 | 2     | MPS bytecode interpreter | **complete**  |
-| 3     | Engine runtime classes   | ~60%          |
+| 3     | Engine runtime classes   | **complete**  |
 | 4     | I/O (input/audio/files)  | 0%            |
 | 5     | Smacker video playback   | 0%            |
 | 6     | Memory/VRAM management   | 0%            |
@@ -57,25 +57,35 @@ on the original EXE), rebuilding each piece in C targeting the PS2's GS
 - A PS2 ELF that boots on real hardware and in PCSX2, renders sprites
   with transparency and animation.
 - A host-side MPS interpreter that loads and runs every one of the
-  game's 43 scripts cleanly.
+  game's 43 scripts cleanly with zero unknowns and zero unhandled
+  opcodes.
 - A complete engine runtime hosting all the engine's classes:
   RQueue, RCompositeAction, RCharacter, RPButton, RAnimation, RSelList,
-  plus generic-class fallback for RHotSpot, RLapTrap, RBackPack,
-  RScenePort, RWorldPort, RKbdInp, RText, RSmackerMovie.
+  RHotSpot (with real bounds and hit-testing), RLapTrap, RBackPack
+  (with inventory slots), RGraphicAnswer, plus generic-class fallback
+  for the remaining classes (RScenePort, RWorldPort, RKbdInp, RText,
+  RSmackerMovie).
 - Six action types (CharacterSpeech, CharacterAnim, Property, Sound,
   Anim, Movie) all dispatched into the engine's queue tick loop.
 - End-to-end opening sequence verified: every object the script
   creates is now a real engine object with correct constructor args
-  and properties:
-  - 7 RCharacters (Joni z=20, Santiago z=18, Owen z=16, Leslie z=14,
-    Socrates, LapTrap, Dealer - z-depth ordered for sprite layering)
+  and state:
+  - 7 RCharacters with correct z-depth ordering (Joni z=20,
+    Santiago z=18, Owen z=16, Leslie z=14, Socrates z=24, LapTrap z=12,
+    Dealer z=8 - so when sprites overlap, the layering matches the
+    original game)
   - 6 RPButtons (sign-in screen UI: Up, Down, Exit, Start, NewPlayer,
-    PracMode - all with correct sprite IDs)
+    PracMode - all with correct sprite IDs and click sounds)
   - 6 RText (the affidavit paragraphs)
   - 4 RSmackerMovie (Logo, MVOP1, MVTitle, MVCEntry)
-  - 3 RHotSpot (closedBackpack + 2 nav)
-  - 2 RScenePort + 1 RWorldPort
-  - 1 each of RAnimation, RBackPack, RKbdInp, RLapTrap, RSelList
+  - 3 RHotSpot with correct pixel bounds (closedBackpack at
+    (44,260)-(78,321) z=22 - the actual game-coords hit area)
+  - 1 each of RAnimation, RBackPack, RKbdInp, RLapTrap, RSelList,
+    RScenePort, RWorldPort
+- Hit-testing works at pixel level: clicking inside (60,290) hits the
+  closedBackpack hotspot; clicking just outside doesn't.
+- Backpack inventory: add_item / remove_item operations work, slots
+  shift correctly when items removed mid-list.
 - The Cairo-hub walk-in choreography (RCompositeAction with 6
   parallel children including Joni's mini-sequence of hide-backpack /
   walk-in / show-backpack) builds correctly through the engine.
@@ -124,7 +134,7 @@ OLOC* x 8         ~640  ~720  ~11       Oasis locations (very uniform)
 PLOC2/3           ~540  ~480  ~12       Pyramid cutscene/transition
 FL.MPS            412   421   3         Admin/level-select panel
 
-Total: 43/43 scripts pass.
+Total: 43/43 scripts pass with engine attached.
 ```
 
 
@@ -202,7 +212,7 @@ The engine tracks per-object arbitrary data via `userData`. Strings like
 - `|` (substring): `ud | 1 | p` - substring from position 1, length p
 
 
-## Engine runtime detail (Phase 3)
+## Engine runtime detail (Phase 3 - complete)
 
 ### Module layout
 
@@ -214,6 +224,9 @@ mps_interp.c               engine.c
     |
     | EVAL_ASSIGN joni = new RCharacter(setID, z)
     +--> engine_create_character("joni", setID, z)
+    |
+    | EVAL_ASSIGN bp = new RHotSpot(x1,y1,x2,y2,z)
+    +--> engine_create_hotspot("bp", x1,y1,x2,y2,z)
     |
     | sQueue.add(SoundAction, 30610)
     +--> engine_queue_add_sound("sQueue", 30610)
@@ -245,9 +258,10 @@ subsystems).
 | MovieAction | movie_name, sound_id | Logged |
 
 "Logged" means the action prints what it would do but doesn't yet
-draw/play. The structure is correct; the side effects come in Phase 4.
+draw/play. The structure is correct; the side effects come in Phase 4
+when we wire the renderer and audio.
 
-### Implemented object types
+### Implemented object types (specialized)
 
 | Object | State | Constructor |
 |--------|-------|-------------|
@@ -257,20 +271,47 @@ draw/play. The structure is correct; the side effects come in Phase 4.
 | RPButton | x, y, set_id, click_sound, enabled | (x, y, set_id) |
 | RAnimation | set_id, z, touchy, frame | (anim_id [, z]) |
 | RSelList | x, y, w, h, list[16], selected | (x, y, w, h) |
-| **Generic** (fallback) | visible, enabled, class_name | (any) |
+| RHotSpot | x1, y1, x2, y2, z + hit-test | (x1, y1, x2, y2, z) |
+| RLapTrap | set_id | (set_id) |
+| RBackPack | x, y, z, inventory[12] | (x, y, z) |
+| RGraphicAnswer | x, y, z, set_id, frame, draggable | (x, y, z, set_id, frame) |
 
-The generic fallback covers RHotSpot, RLapTrap, RBackPack, RScenePort,
-RWorldPort, RKbdInp, RText, RSmackerMovie, RGraphicAnswer, etc. -
-classes whose specialised semantics aren't implemented yet but whose
-existence in the engine registry is enough for property-set and event
-registration to route correctly.
+### Generic-class fallback
 
-### Property setter
+For classes whose specialised semantics aren't fully implemented yet
+(RScenePort, RWorldPort, RKbdInp, RText, RSmackerMovie), the engine
+creates a generic object with a class_name tag. This lets property-set
+and event registration route correctly even before specific behavior
+is wired up.
 
-A common method dispatcher routes simple property-set calls to the
-engine. Recognized property names: `visible`, `enabled`, `movable`,
-`touchy`, `frame`, `x`, `y`, `z`, `clickSoundID`. So when CHUB calls
-`joni.movable(0)`, our engine actually marks Joni as not-movable.
+### Universal property setter
+
+Method calls of the form `obj.propname(value)` route to
+`engine_set_property` if `obj` is a known engine object and `propname`
+is one of: `visible`, `enabled`, `movable`, `touchy`, `frame`, `x`,
+`y`, `z`, `clickSoundID`. So when CHUB calls `joni.movable(0)`, our
+engine actually marks Joni as not-movable.
+
+### Hit-testing API
+
+```c
+int engine_hotspot_hit_test(const char *name, int32_t mx, int32_t my);
+```
+
+Returns 1 if (mx, my) is inside the hotspot's rectangle, 0 otherwise.
+Respects `enabled` and `touchy` flags. Verified working at exact
+pixel coordinates - clicking inside (60, 290) hits the closedBackpack
+at (44, 260)-(78, 321); clicking at (43, 290) doesn't.
+
+### Backpack inventory API
+
+```c
+int engine_backpack_add_item(const char *name, int32_t item_id);
+int engine_backpack_remove_item(const char *name, int32_t item_id);
+```
+
+12 slot inventory. Slots shift when items removed mid-list to keep
+the array compact.
 
 
 ## MPS bytecode interpreter (Phase 2 - complete)
@@ -395,7 +436,7 @@ cf4_ps2/
 |   |-- main.c             PS2 entry point
 |   |-- renderer.c/.h      PS2 GS renderer
 |   |-- mps_interp.c/.h    MPS bytecode interpreter (Phase 2 - complete)
-|   |-- engine.c/.h        Engine runtime classes (Phase 3)
+|   |-- engine.c/.h        Engine runtime classes (Phase 3 - complete)
 |   |-- embedded_sprite.h  Test sprite (Joni)
 |   `-- embedded_anim.h    Test sprite (Santiago, animated)
 |
@@ -431,32 +472,28 @@ cf4_ps2/
 
 ## What's left to do
 
-### Phase 3 (Engine runtime classes) - 60% done
-
-Continuing in priority order:
-
-1. **Specialise generic stubs** - RHotSpot (clickable areas with bounds
-   checking), RLapTrap (context-sensitive hint device), RBackPack
-   (inventory state)
-2. **RGraphicAnswer** - draggable letter/number piece (PWS2 word puzzles)
-3. **RScenePort** - currently generic; could grow real semantics for
-   pause/resume/key handling, but pure-handler approach already works
-4. **Bridge engine state into the PS2 renderer** - the moment the
-   game becomes visible. Translate engine_object_t for visible objects
-   into draw calls. Texture-loading from RSC required first.
-
 ### Phase 4 (I/O) - 0%
 
+Now that the interpreter and engine are complete, this is where the
+game becomes responsive in the real world:
+
+- Add `engine.c` and `mps_interp.c` to the PS2 Makefile
+- Embed STARTUP.MPS in the ELF (or read from `host:/`)
+- Bridge engine_object_t state into the renderer:
+  - For each visible RCharacter / RPButton / RAnimation / RHotSpot,
+    look up its sprite by set_id and draw at (x,y) with current frame
+  - z-order the draw list so layering matches the original game
 - `CacheDLL` reads `.rsc` files; `UncacheAllDLLs` frees
-- `SCENE_LOAD` hands off to new interpreter context
-- USB / CD / DVD file I/O
-- DS2 input via libpad
-- SPU2 audio via audsrv
-- Memory card save/load
+- USB / CD / DVD file I/O for assets
+- DS2 input via libpad - convert button presses to mouse-equivalent
+  events, pump engine_hotspot_hit_test for click handling
+- SPU2 audio via audsrv - SoundAction now actually plays
+- Memory card save/load for player profiles
 
 ### Phase 5 (Smacker video) - 0%
 
 Port libsmacker/ffmpeg to PS2, OR pre-convert SMK -> MPEG-1.
+MovieAction would actually play through `RSmackerMovie.start`.
 
 ### Phase 6 (Memory/VRAM) - 0%
 
@@ -478,7 +515,7 @@ cd /project/cf4_ps2
 make
 ```
 
-**Interpreter side (host Linux):**
+**Interpreter + engine side (host Linux):**
 
 ```sh
 gcc -I src tools/mps_chain_test.c src/mps_interp.c src/engine.c -o tools/mps_chain_test
