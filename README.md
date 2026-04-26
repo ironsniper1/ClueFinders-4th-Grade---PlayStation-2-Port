@@ -9,38 +9,36 @@ audio, video) are reused. The engine is being rebuilt in C using the
 homebrew PS2SDK, driven by the original game's MPS bytecode scripts.
 
 
-## Latest milestone: complete reverse engineering
+## Latest milestone: real sprites, real positions
 
-Every file format the game uses has been fully decoded. The Anchor
-Offset Coordinates (AO coords / kUseAOCoords) - the long-standing
-mystery of where buttons and characters appear on screen - have been
-located inside ASEQ sprite files via Ghidra disassembly of the
-original Win32 executable.
+For the first time, ClueFinders 4th Grade renders actual game graphics
+on the PlayStation 2 hardware emulator at their original game-defined
+positions:
 
-Result: positions are now known for every visible object in the game.
+- The teal scarab beetles (NEW PLAYER SIGN-IN, START GAME, EXIT GAME)
+- The yellow sandstone PRACTICE MODE tablet
+- The orange scroll arrows for the player list
+- The SignInList area at its scripted position (51, 208)
 
-| Cast member | Cairo hub position |
-|-------------|---------------------|
-| Owen        | (19, 199) |
-| Joni        | (46, 201) |
-| Santiago    | (78, 181) |
-| Leslie      | (115, 218) |
-| LapTrap     | (147, 172) |
-| Socrates    | (102, 390) |
-| Dealer      | (504, 151) |
+All buttons appear at the exact x/y coordinates that the original
+Knowledge Adventure engineers chose, extracted from the game's ASEQ
+sprite data via reverse engineering. The PS2 boots the game's MPS
+bytecode, runs the Signin script, builds the engine object graph,
+and renders each object with its real sprite at its real screen
+position.
 
-| Sign-In button | Position |
-|----------------|----------|
-| Background     | (0, 0)   |
-| Exit           | (68, 316)  |
-| New Player     | (200, 335) |
-| Practice Mode  | (158, 426) |
-| Up arrow       | (423, 213) |
-| Down arrow     | (423, 249) |
-| Start          | (347, 322) |
+The journey to this point required:
 
-239 scene folders, 2792 sprites with AO coordinates extracted across
-all 264 RSC resource files.
+1. Reverse engineering the entire MPS bytecode opcodes
+2. Reverse engineering all the engine class semantics
+3. Reverse engineering the resource container format
+4. Reverse engineering the ASEQ sprite format
+5. Reverse engineering the AO coordinate system via Ghidra
+6. Building a PS2 GS renderer from scratch
+7. Building an MPS interpreter that runs on the EE
+8. Building an engine runtime that creates objects with AO-resolved coords
+9. Discovering that PS2 NTSC interlaced FIELD mode (not FRAME mode)
+   maps script Y coords linearly to the visible scanlines
 
 
 ## Project overview
@@ -74,16 +72,16 @@ traits:
 
 ## Current state
 
-**Overall project: ~70% complete**
+**Overall project: ~75% complete**
 
 | Phase | Area                     | Status        |
 |-------|--------------------------|---------------|
-| 1     | PS2 renderer             | ~95%          |
+| 1     | PS2 renderer             | **complete**  |
 | 2     | MPS bytecode interpreter | **complete**  |
 | 3     | Engine runtime classes   | **complete**  |
 | 4a    | I/O - PS2 boot + run     | **complete**  |
 | 4b    | I/O - reverse engineering| **complete**  |
-| 4c    | I/O - draw real sprites  | 0%            |
+| 4c    | I/O - draw real sprites  | **complete**  |
 | 4d    | I/O - input + audio      | 0%            |
 | 5     | Smacker video playback   | 0%            |
 | 6     | Memory/VRAM management   | 0%            |
@@ -99,15 +97,48 @@ traits:
 - 16 engine objects exist in PS2 memory with correct state
 - Action queue cycles work end-to-end: SoundAction queued, played
   (logged), finished event fires, eSQueueDone runs
-- Renderer draws engine state as colored rectangles
+- 7 SIGNIN sprites loaded into PS2 VRAM (background failed - too large)
+- AOC coordinate table looked up during object creation
+- Render loop draws each visible object with its real sprite at its
+  real game position (kUseAOCoords resolved via aoc.json data)
 - All 264 RSC resource files extracted: 3116 sprites total
 - All AO coordinates extracted into per-scene `aoc.json` files
+- 239 scenes, 2792 sprites with positions ready
 
 **What doesn't run yet:**
-- Drawing real sprites (rectangles only)
+- Background sprite rendering (1024x512 too large for 4MB VRAM,
+  needs splitting or compression)
+- Text rendering (the 6 affidavit text lines and "Player" input field)
 - Audio output (logged only)
 - Controller input (no virtual cursor yet)
 - Smacker cutscenes
+
+
+## Sign-In screen positions
+
+| Button | Position | Game role |
+|--------|----------|-----------|
+| Background     | (0, 0)     | Papyrus map background |
+| Up arrow       | (423, 213) | Scroll list up |
+| Down arrow     | (423, 249) | Scroll list down |
+| Exit           | (68, 316)  | "Exit Game" |
+| Start          | (347, 322) | "Start Game" |
+| New Player     | (200, 335) | "New Player Sign-In" |
+| Practice Mode  | (158, 426) | "Practice Mode" |
+| SignInList     | (51, 208)  | Player name list/input |
+
+
+## Cairo hub character positions (CHUBP)
+
+| Cast member | Position |
+|-------------|----------|
+| Owen        | (19, 199) |
+| Joni        | (46, 201) |
+| Santiago    | (78, 181) |
+| Leslie      | (115, 218) |
+| LapTrap     | (147, 172) |
+| Socrates    | (102, 390) |
+| Dealer      | (504, 151) |
 
 
 ## Reverse engineering complete
@@ -173,175 +204,80 @@ void apply_aoc(int *obj, short *aseq_data) {
 }
 ```
 
-### Tools added
 
-- `tools/cf4_extract_all_v2.py` - extracts all RSC contents (sprites,
-  palettes, fonts, WAV files), with classifier bug fixed (was
-  misidentifying ASEQ as palettes/wavs in some files)
-- `tools/extract_aoc.py` - reads .sprite files and writes per-scene
-  `aoc.json` with X/Y/Z for each sprite ID
-- `tools/ghidra_scripts/find_ao_coords.py` - Ghidra headless script
-  that locates kUseAOCoords usages and decompiles surrounding functions
-- `tools/ghidra_scripts/decompile_func.py` - Ghidra headless script
-  for targeted decompilation by address
+## PS2 renderer (complete)
 
+The renderer (`src/renderer.c`) drives the PS2's Graphics Synthesizer
+directly using `ps2sdk`'s draw/graph/dma/packet libraries.
 
-## 43-script survey results
+**GS configuration that worked:**
 
-Every `.MPS` file in the game loads, parses, and executes its
-MAIN_PROC + pInit + pStart protocol with the engine attached.
-
-```
-Total: 43/43 scripts pass.
+```c
+graph_initialize(fb_addr, 640, 448, GS_PSM_32, 0, 0);
+graph_set_mode(GRAPH_MODE_INTERLACED, GRAPH_MODE_NTSC,
+               GRAPH_MODE_FIELD,        // NOT FRAME
+               GRAPH_ENABLE);
+graph_set_screen(0, 0, 640, 448);
 ```
 
+The interlaced FIELD mode was the breakthrough: in FRAME mode, the GS
+renders to a buffer where each line is doubled across the two interlaced
+fields, halving the effective Y resolution. FIELD mode renders each
+visible line directly, giving us the full 0..447 Y range we expect.
 
-## Verified engine mechanics
+**Capabilities:**
 
-### Character click escalation
+- GS initialization, double-buffered 640x448 NTSC framebuffers
+- Manual GS register setup (FRAME, ZBUF, XYOFFSET, SCISSOR, etc.)
+- Rectangle drawing with alpha
+- Textured sprite drawing with alpha testing (ATST=6 GREATER, AREF=0)
+- Multi-frame sprite animation
+- PSMCT32 32-bit RGBA texture format
+- Texture loading from host: filesystem at runtime
+- Sprite-to-texture mapping by set_id
 
-Characters respond differently based on state or click counter:
-
-- **Socrates click:** context-sensitive help based on scene state
-- **Character click (CHUB):** first click has Owen speak, subsequent
-  clicks cycle
-- **Geezar click (CMA):** 4-tier dialogue with level-tiered taunts
-- **Crocodile click (OMA):** cycles through 4 canned lines
-
-### Scroll/clue progression (CHUB)
-
-The Cairo world has a 5-clue story arc where each clue triggers
-different character reactions with increasing ensemble size:
-
-| Clue # | Characters who react | Narrative beat |
-|--------|---------------------|----------------|
-| 1 | Owen, Joni | "Oh cool, a clue!" |
-| 2 | Owen, Leslie, Joni, LapTrap | Group reaction |
-| 3 | Santiago (first line!), Leslie, LapTrap, Joni | Leader emerges |
-| 4 | Santiago, Joni | "We're close!" beat |
-| 5 | Owen, Santiago, Leslie, Joni | Full-cast reveal |
-
-### Cairo hub walk-in choreography
-
-When the player enters the hub on a return visit, the game queues a
-`walkInCAct` RCompositeAction containing 6 parallel children:
-
-```
-walkInCAct (RCompositeAction, 6 children):
-  joniWalkInQAct (real queue, 3 actions):
-    PropertyAction: closedBackpack.visible = 0
-    CharacterAnimAction: joni walks in
-    PropertyAction: closedBackpack.visible = 1
-  walkInCAct_anon0: Santiago anim
-  walkInCAct_anon1: Owen anim
-  walkInCAct_anon2: Leslie anim
-  walkInCAct_anon3: Socrates anim
-  walkInCAct_anon4: LapTrap anim
-```
-
-### "Limburger" QA cheat
-
-Typing "Limburger" as the player name on the sign-in screen shortcuts
-to the teacher panel.
-
-### Multi-outcome collision (OMA)
-
-Catapult rocks can hit 4 distinct targets each with its own handler:
-`pRockHitWater`, `pRockHitStatue` (spawns RAnimation with
-`kRockCracksUpID[activeRock]` - different crack anim per rock type!),
-`pRockHitLocation`, `pRockStraightUp`.
-
-### Object userData and string operators
-
-Strings like `"FIRE_GEM#3"` encode multi-field data in a single
-property, parsed via:
-
-- `@` (find): `"#" @ ud` - returns 1-based position of `#` in ud
-- `|` (substring): `ud | 1 | p` - substring from position 1, length p
-
-
-## Engine runtime detail
-
-### Module layout
-
-```
-mps_interp.c (interpreter)       engine.c (runtime)
-    +-- mps_load                 +-- engine_init
-    +-- mps_step                 +-- engine_create_queue
-    +-- mps_call_proc            +-- engine_create_character
-    +-- mps_fire_event           +-- engine_create_button
-    +-- mps_pending_script       +-- engine_create_hotspot
-                                 +-- engine_create_backpack
-                                 +-- engine_queue_add_*
-                                 +-- engine_set_property
-                                 +-- engine_tick
-                                 +-- engine_hotspot_hit_test
-                                 +-- engine_get_object_array
-```
-
-### Implemented action types
-
-| Action | Args | Status |
-|--------|------|--------|
-| CharacterSpeechAction | who, speech_id | Logged |
-| CharacterAnimAction | who, anim_id | Logged |
-| PropertyAction | obj, prop, value | Applied to engine state |
-| SoundAction | sfx_id | Logged |
-| AnimAction | anim_id, z, frame_start, hold_last | Logged |
-| MovieAction | movie_name, sound_id | Logged |
-
-### Implemented object types (specialized)
-
-| Object | State | Constructor |
-|--------|-------|-------------|
-| RQueue | actions[] + playing index + finished flag | () |
-| RCompositeAction | child names + started flag | () |
-| RCharacter | set_id, z, movable, frame, visible | (set_id, z) |
-| RPButton | x, y, set_id, click_sound, enabled | (x, y, set_id) |
-| RAnimation | set_id, z, touchy, frame | (anim_id [, z]) |
-| RSelList | x, y, w, h, list[16], selected | (x, y, w, h) |
-| RHotSpot | x1, y1, x2, y2, z + hit-test | (x1, y1, x2, y2, z) |
-| RLapTrap | set_id | (set_id) |
-| RBackPack | x, y, z, inventory[12] | (x, y, z) |
-| RGraphicAnswer | x, y, z, set_id, frame, draggable | (x, y, z, set_id, frame) |
+All 2598 textures pre-padded to POT dimensions via
+`tools/cf4_pad_pot.py`.
 
 
 ## How the PS2 boot works
 
 ```c
-// src/main_mps.c
+// src/main_mps.c (Phase 4c version)
 SifInitRpc(0);
 padInit(0); padPortOpen(0, 0, pad_buf);
 engine_init();
+register_signin_aoc();    // load aoc.json positions
 
-mps_context_t ctx;
-mps_load(&ctx, "host:STARTUP.MPS");
-run(&ctx, 5000);
-
-// Fire 3 movie events to advance through intro
-for (int i = 0; i < 3; i++) {
-    mps_fire_event(&ctx, "movie", "finished");
-    run(&ctx, 5000);
-}
-
-// Follow SCENE_LOAD chain
-const char *next = mps_pending_script(&ctx);
-mps_free(&ctx);
-mps_load(&ctx, "host:Signin.mps");
-mps_call_proc(&ctx, "pInit");
-run(&ctx, 5000);
-ctx.ip = 323;  // Master init proc
-run(&ctx, 5000);
-
-// Open renderer and draw engine state
 renderer_t r;
 renderer_init(&r);
+renderer_set_bg(&r, 30, 30, 50);
+
+// Load sprites by set_id from host:
+for (each tex in {30600, 30610, 30611, ...}) {
+    int tid = renderer_load_tex(&r, "host:assets/textures_pot/signin/...");
+    register_sprite(set_id, tid);
+}
+
+// Run the boot chain
+mps_load(&ctx, "host:STARTUP.MPS");
+run(&ctx, 5000);
+for (3 movies) mps_fire_event("movie", "finished");
+mps_load(&ctx, "host:Signin.mps");
+mps_call_proc("pInit");
+ctx.ip = 323;             // master init
+run(&ctx, 5000);
+
+// Render loop
 for (;;) {
     renderer_begin_frame(&r);
-    engine_object_t *objs = engine_get_object_array();
-    for (int i = 0; i < 64; i++) {
-        if (objs[i].kind == OBJ_NONE) continue;
-        renderer_draw_rect(&r, x, y, w, h, r, g, b, alpha);
+    for (each visible engine_object) {
+        if (kind == BUTTON || kind == ANIMATION) {
+            int tid = sprite_tex_for(o->set_id);
+            if (tid >= 0) renderer_draw_sprite(&r, tid, o->x, o->y);
+        } else if (kind == SELLIST) {
+            renderer_draw_rect(&r, o->x, o->y, o->w, o->h, ...);
+        }
     }
     renderer_end_frame(&r);
 }
@@ -365,41 +301,63 @@ N *  pool_entry                       (from entry 3)
 All 28 opcodes handled. Full expression evaluator with arithmetic,
 comparison (int + string), find/substring, and parens.
 
+### 43-script survey results
 
-## Reverse engineering work
+Every `.MPS` file in the game loads, parses, and executes its
+MAIN_PROC + pInit + pStart protocol with the engine attached.
 
-Documentation in `docs/`:
-
-- `docs/mps_opcodes.md` - bytecode format spec and opcode table
-- `docs/engine_classes.md` - engine classes, built-in commands, events
-- `docs/file_formats.md` - RSC/RRGB/ASEQ/NFNT/WAVE specs (full)
-- `docs/disassembly/` - all 43 MPS scripts disassembled
-
-### Characters catalogued
-
-**Main cast (6):** Joni, Santiago, Owen, Leslie, Socrates, LapTrap
-**Villain:** Geezar
-**NPCs (13):** Dealer, Boat Girl, Coffee Guy, Seller, Mason, Exportress,
-Purrina, Fixnuppan, Art Mouse, Bilko, Rocko, Sphinxo, Thoth, crocodile
+```
+Total: 43/43 scripts pass.
+```
 
 
-## PS2 renderer
+## Engine runtime detail
 
-The renderer (`src/renderer.c`) drives the PS2's Graphics Synthesizer
-directly using `ps2sdk`'s draw/graph/dma/packet libraries. Now driven
-from engine state.
+### Module layout
 
-**Capabilities:**
+```
+mps_interp.c (interpreter)       engine.c (runtime)
+    +-- mps_load                 +-- engine_init
+    +-- mps_step                 +-- engine_create_queue
+    +-- mps_call_proc            +-- engine_create_character
+    +-- mps_fire_event           +-- engine_create_button   <- AOC resolution
+    +-- mps_pending_script       +-- engine_create_animation<- AOC resolution
+                                 +-- engine_create_hotspot
+                                 +-- engine_create_backpack
+                                 +-- engine_aoc_register    <- new
+                                 +-- engine_aoc_get_x/y/z   <- new
+                                 +-- engine_queue_add_*
+                                 +-- engine_set_property
+                                 +-- engine_tick
+                                 +-- engine_hotspot_hit_test
+                                 +-- engine_get_object_array
+```
 
-- GS initialization, double-buffered 640x448 NTSC framebuffers
-- Manual GS register setup (FRAME, ZBUF, XYOFFSET, SCISSOR, etc.)
-- Rectangle drawing with alpha (used for the scene graph display)
-- Textured sprite drawing with alpha testing (ATST=6 GREATER, AREF=0)
-- Multi-frame sprite animation
-- PSMCT32 32-bit RGBA texture format
+### Implemented action types
 
-All 2598 textures pre-padded to POT dimensions via
-`tools/cf4_pad_pot.py`.
+| Action | Args | Status |
+|--------|------|--------|
+| CharacterSpeechAction | who, speech_id | Logged |
+| CharacterAnimAction | who, anim_id | Logged |
+| PropertyAction | obj, prop, value | Applied to engine state |
+| SoundAction | sfx_id | Logged |
+| AnimAction | anim_id, z, frame_start, hold_last | Logged |
+| MovieAction | movie_name, sound_id | Logged |
+
+### Implemented object types
+
+| Object | State | Constructor |
+|--------|-------|-------------|
+| RQueue | actions[] + playing index + finished flag | () |
+| RCompositeAction | child names + started flag | () |
+| RCharacter | set_id, z, movable, frame, visible | (set_id, z) |
+| RPButton | x, y, set_id, click_sound, enabled | (x, y, set_id), AOC-aware |
+| RAnimation | set_id, z, touchy, frame | (anim_id [, z]), AOC-aware |
+| RSelList | x, y, w, h, list[16], selected | (x, y, w, h) |
+| RHotSpot | x1, y1, x2, y2, z + hit-test | (x1, y1, x2, y2, z) |
+| RLapTrap | set_id | (set_id) |
+| RBackPack | x, y, z, inventory[12] | (x, y, z) |
+| RGraphicAnswer | x, y, z, set_id, frame, draggable | (x, y, z, set_id, frame) |
 
 
 ## Project layout
@@ -411,17 +369,20 @@ cf4_ps2/
 |
 |-- src/
 |   |-- main.c                  Sprite-viewer test (legacy)
-|   |-- main_mps.c              Phase 4 PS2 boot + visible scene graph
-|   |-- renderer.c/.h           PS2 GS renderer
+|   |-- main_mps.c              Phase 4c PS2 boot + real sprite rendering
+|   |-- renderer.c/.h           PS2 GS renderer (interlaced FIELD mode)
 |   |-- mps_interp.c/.h         MPS bytecode interpreter
-|   |-- engine.c/.h             Engine runtime classes
+|   |-- engine.c/.h             Engine runtime classes (with AOC table)
+|   |-- aoc_signin.c            Auto-generated SIGNIN AOC registrations
 |   |-- embedded_sprite.h       Test sprite (Joni)
 |   `-- embedded_anim.h         Test sprite (Santiago, animated)
 |
 |-- assets/
 |   |-- textures/               Raw .tex files
-|   |-- textures_pot/           POT-padded textures (2598)
-|   |-- sprites/                Per-scene .sprite + .png + aoc.json (239 scenes)
+|   |-- textures_pot/           POT-padded textures (used by PS2)
+|   |   `-- signin/             7 SIGNIN .tex files
+|   |-- sprites/                Per-scene .sprite + .png + aoc.json
+|   |   `-- (239 scene folders, 2792 sprites with positions)
 |   |-- audio/                  WAVs
 |   |-- fonts/                  NFNT data
 |   |-- palettes/               RRGB JSONs
@@ -431,6 +392,7 @@ cf4_ps2/
 |-- tools/
 |   |-- cf4_extract_all_v2.py   Extracts all RSC contents
 |   |-- extract_aoc.py          Per-scene aoc.json builder
+|   |-- cf4_png2tex.py
 |   |-- cf4_pad_pot.py
 |   |-- tex_to_embedded_h.py
 |   |-- mps_disasm.py
@@ -452,20 +414,32 @@ cf4_ps2/
 
 ## What's left to do
 
-### Phase 4c (real sprite drawing) - 0%
-
-- Convert SIGNIN PNGs to PS2 .tex format
-- Embed or load on demand
-- Update main_mps.c to look up sprite by `set_id`, fetch AO coords from
-  aoc.json, draw at correct position
-- Result: actual button graphics on PS2 instead of colored rectangles
-
 ### Phase 4d (input + audio) - 0%
 
-- DS2 input via libpad - virtual mouse cursor for click handling
+- DS2 input via libpad - virtual mouse cursor for click handling,
+  hit-testing against engine_hotspot_hit_test
 - SPU2 audio via audsrv - SoundAction actually plays
+- Background music streaming
 - USB / CD / DVD asset loading for real hardware
 - Memory card save/load for player profiles
+
+### Background rendering
+
+The 1024x512 background sprite is too large for the PS2's 4MB VRAM
+when combined with framebuffer + Z + button textures. Solutions:
+
+- Split into 4 quadrants of 512x256 each
+- Compress to 8-bit indexed with shared palette
+- Stream from EE RAM on demand
+
+### Text rendering
+
+The Signin scene creates 6 RText objects with the affidavit text.
+Need to:
+
+- Implement NFNT bitmap font rendering
+- Wire RText.touchy=0 styling
+- Render text strings at their (x, y) coords
 
 ### Phase 5 (Smacker video) - 0%
 
@@ -489,7 +463,8 @@ Full playthrough, matching original feel, 60Hz perf target.
 docker run -it --rm -v ~/cf4_ps2:/project ps2dev/ps2dev:latest sh
 cd /project
 make
-# Copy cf4.elf and assets/scripts/*.MPS to PCSX2 host folder
+# Copy cf4.elf and assets/textures_pot/signin/*.tex
+# and assets/scripts/*.MPS to PCSX2 host folder
 # In PCSX2: System -> Run ELF
 ```
 
